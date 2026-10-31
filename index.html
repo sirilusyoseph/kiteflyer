@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kite Flyer</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --accent: #f97316;
+    --accent2: #ea580c;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 1.3rem;
+    letter-spacing: 1px;
+    color: var(--accent);
+  }
+  #hud {
+    display: flex;
+    gap: 22px;
+    font-size: 0.95rem;
+    color: var(--muted);
+  }
+  #hud span { color: var(--accent); font-weight: 700; }
+  #board-wrap {
+    position: relative;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.45);
+  }
+  canvas {
+    display: block;
+    border-radius: 6px;
+    max-width: 92vw;
+    max-height: 70vh;
+    touch-action: none;
+    cursor: pointer;
+  }
+  #overlay {
+    position: absolute;
+    inset: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(15,23,42,0.88);
+    border-radius: 6px;
+    text-align: center;
+    padding: 20px;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h2 { margin: 0; font-size: 1.4rem; color: var(--accent); }
+  #overlay p { margin: 0; color: var(--muted); font-size: 0.88rem; max-width: 240px; line-height: 1.5; }
+  button {
+    background: var(--accent2);
+    color: #fff;
+    border: none;
+    padding: 11px 28px;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:active { transform: scale(0.96); }
+  #hint { font-size: 0.76rem; color: var(--muted); }
+  #fs-btn {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 5;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 8px;
+    background: rgba(15,23,42,0.6);
+    color: #fff;
+    font-size: 1.1rem;
+    line-height: 1;
+  }
+  #board-wrap.is-fs {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    border-radius: 0;
+    padding: 0;
+  }
+  #board-wrap.is-fs canvas { max-width: none; max-height: none; border-radius: 0; }
+  #board-wrap.is-fs #overlay { inset: 0; border-radius: 0; }
+  #board-wrap.is-fs #fs-btn { top: calc(10px + env(safe-area-inset-top, 0px)); right: calc(10px + env(safe-area-inset-right, 0px)); }
+  #board-wrap.pseudo-fs {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    width: 100%;
+    height: 100%;
+  }
+  #board-wrap:fullscreen { width: 100vw; height: 100vh; }
+  #board-wrap:-webkit-full-screen { width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+  <h1>🪁 KITE FLYER</h1>
+  <div id="hud">
+    <div>Score: <span id="score">0</span></div>
+    <div>Best: <span id="best">0</span></div>
+  </div>
+  <div id="board-wrap">
+    <canvas id="board" width="320" height="480"></canvas>
+    <button id="fs-btn" title="Fullscreen (F)" aria-label="Toggle fullscreen">⛶</button>
+    <div id="overlay">
+      <h2 id="overlay-title">KITE FLYER</h2>
+      <p id="overlay-msg">Tap, click or press Space to catch the wind and lift your kite. Slip through the gaps between the poles!</p>
+      <button id="start-btn">Start Flying</button>
+    </div>
+  </div>
+  <div id="hint">Tap / click / Space = lift · F = fullscreen</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  let W = canvas.width;   // logical width: widens in fullscreen to match the screen shape
+  const H = canvas.height;
+
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlay-title');
+  const overlayMsg = document.getElementById('overlay-msg');
+  const startBtn = document.getElementById('start-btn');
+
+  function safeGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+  function safeSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+  let best = parseInt(safeGet('kite_best') || '0', 10);
+  bestEl.textContent = best;
+
+  const GROUND_H = 56;
+  const GROUND_Y = H - GROUND_H;
+  const GRAVITY = 0.34;
+  const FLAP = -5.8;
+  const MAX_FALL = 8;
+  const POLE_W = 54;
+  const POLE_SPACING = 190;
+  const KITE_X = 90;
+  const KITE_R = 11;
+
+  // Sky gradient is created once and reused every frame
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  skyGrad.addColorStop(0, '#60a5fa');
+  skyGrad.addColorStop(1, '#bae6fd');
+
+  let kite, poles, clouds, tail, score, running, started, speed, gap, groundOffset, deadTimer, lastTime;
+
+  function makeClouds() {
+    const list = [];
+    for (let i = 0; i < 5; i++) {
+      list.push({ x: Math.random()*W, y: 30 + Math.random()*(GROUND_Y-160), s: 0.6 + Math.random()*0.8, v: 0.15 + Math.random()*0.25 });
+    }
+    return list;
+  }
+
+  function reset() {
+    kite = { y: H/2 - 20, vy: 0, angle: 0 };
+    tail = [];
+    for (let i = 0; i < 6; i++) tail.push({ x: KITE_X - 14 - i*9, y: kite.y + 8 + i*3 });
+    poles = [];
+    clouds = clouds || makeClouds();
+    score = 0;
+    speed = 2.1;
+    gap = 150;
+    groundOffset = 0;
+    started = false;
+    running = true;
+    deadTimer = 0;
+    scoreEl.textContent = 0;
+    fillPoles();
+  }
+
+  function addPole(x) {
+    const margin = 50;
+    const minTop = margin;
+    const maxTop = GROUND_Y - gap - margin;
+    const top = minTop + Math.random()*(maxTop - minTop);
+    poles.push({ x, top, gap, passed: false });
+  }
+
+  // Keep poles queued up to just past the right edge (also covers a screen that gets wider)
+  function fillPoles() {
+    while (poles.length === 0 || poles[poles.length-1].x < W + 20) {
+      addPole(poles.length ? poles[poles.length-1].x + POLE_SPACING : W + 60);
+    }
+  }
+
+  function flap() {
+    if (!running) return;
+    if (!started) started = true;
+    kite.vy = FLAP;
+  }
+
+  function circleRect(cx, cy, r, rx, ry, rw, rh) {
+    const nx = Math.max(rx, Math.min(cx, rx+rw));
+    const ny = Math.max(ry, Math.min(cy, ry+rh));
+    const dx = cx-nx, dy = cy-ny;
+    return dx*dx + dy*dy < r*r;
+  }
+
+  function update(dt) {
+    groundOffset = (groundOffset + speed*dt) % 24;
+
+    clouds.forEach(c => {
+      c.x -= c.v*dt;
+      if (c.x < -70) { c.x = W + 40; c.y = 30 + Math.random()*(GROUND_Y-160); }
+    });
+
+    if (!started) {
+      // gentle hover before the first tap
+      kite.y = H/2 - 20 + Math.sin(performance.now()/300)*6;
+      kite.angle = 0;
+      updateTail(dt);
+      return;
+    }
+
+    kite.vy = Math.min(MAX_FALL, kite.vy + GRAVITY*dt);
+    kite.y += kite.vy*dt;
+    kite.angle = Math.max(-0.5, Math.min(0.9, kite.vy*0.09));
+
+    speed = Math.min(3.4, 2.1 + score*0.04);
+    gap = Math.max(112, 150 - score*1.2);
+
+    poles.forEach(p => { p.x -= speed*dt; });
+    fillPoles();
+    if (poles[0].x + POLE_W < -10) poles.shift();
+
+    poles.forEach(p => {
+      if (!p.passed && p.x + POLE_W < KITE_X - KITE_R) {
+        p.passed = true;
+        score++;
+        scoreEl.textContent = score;
+      }
+    });
+
+    updateTail(dt);
+
+    // collisions
+    if (kite.y + KITE_R >= GROUND_Y || kite.y - KITE_R <= 0) { gameOver(); return; }
+    for (const p of poles) {
+      if (p.x > KITE_X + KITE_R + 4 || p.x + POLE_W < KITE_X - KITE_R - 4) continue;
+      if (circleRect(KITE_X, kite.y, KITE_R, p.x, 0, POLE_W, p.top) ||
+          circleRect(KITE_X, kite.y, KITE_R, p.x, p.top + p.gap, POLE_W, GROUND_Y - (p.top + p.gap))) {
+        gameOver();
+        return;
+      }
+    }
+  }
+
+  function updateTail(dt) {
+    let px = KITE_X - 8, py = kite.y + 12;
+    const wave = performance.now()/140;
+    for (let i = 0; i < tail.length; i++) {
+      const tx = px - 9;
+      const ty = py + 4 + Math.sin(wave + i*0.9)*3;
+      tail[i].x += (tx - tail[i].x) * Math.min(1, 0.35*dt);
+      tail[i].y += (ty - tail[i].y) * Math.min(1, 0.35*dt);
+      px = tail[i].x; py = tail[i].y;
+    }
+  }
+
+  function drawCloud(c) {
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    const r = 14*c.s;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI*2);
+    ctx.arc(c.x + r*1.1, c.y - r*0.4, r*1.2, 0, Math.PI*2);
+    ctx.arc(c.x + r*2.3, c.y, r, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function drawPole(x, y, w, h, capAtBottom) {
+    if (h <= 0) return;
+    ctx.fillStyle = '#92400e';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#b45309';
+    ctx.fillRect(x + 6, y, 8, h);
+    // cap
+    const capH = 18;
+    const capY = capAtBottom ? y + h - capH : y;
+    ctx.fillStyle = '#78350f';
+    ctx.fillRect(x - 4, capY, w + 8, capH);
+    ctx.fillStyle = '#a16207';
+    ctx.fillRect(x - 4, capY, w + 8, 4);
+  }
+
+  function drawKite() {
+    // string/tail
+    ctx.strokeStyle = 'rgba(30,41,59,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(KITE_X - 4, kite.y + 10);
+    tail.forEach(t => ctx.lineTo(t.x, t.y));
+    ctx.stroke();
+    // bows
+    for (let i = 1; i < tail.length; i += 2) {
+      ctx.fillStyle = i % 4 === 1 ? '#ef4444' : '#facc15';
+      ctx.fillRect(tail[i].x - 3, tail[i].y - 3, 6, 6);
+    }
+
+    ctx.save();
+    ctx.translate(KITE_X, kite.y);
+    ctx.rotate(kite.angle);
+    // diamond body
+    ctx.beginPath();
+    ctx.moveTo(0, -17);
+    ctx.lineTo(13, -2);
+    ctx.lineTo(0, 17);
+    ctx.lineTo(-13, -2);
+    ctx.closePath();
+    ctx.fillStyle = '#f97316';
+    ctx.fill();
+    // two-tone panels
+    ctx.beginPath();
+    ctx.moveTo(0, -17);
+    ctx.lineTo(13, -2);
+    ctx.lineTo(0, -2);
+    ctx.closePath();
+    ctx.fillStyle = '#fb923c';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(0, 17);
+    ctx.lineTo(-13, -2);
+    ctx.lineTo(0, -2);
+    ctx.closePath();
+    ctx.fillStyle = '#c2410c';
+    ctx.fill();
+    // cross sticks
+    ctx.strokeStyle = '#7c2d12';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -17); ctx.lineTo(0, 17);
+    ctx.moveTo(-13, -2); ctx.lineTo(13, -2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function draw() {
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, W, GROUND_Y);
+
+    clouds.forEach(drawCloud);
+
+    poles.forEach(p => {
+      drawPole(p.x, 0, POLE_W, p.top, true);
+      drawPole(p.x, p.top + p.gap, POLE_W, GROUND_Y - (p.top + p.gap), false);
+    });
+
+    // ground
+    ctx.fillStyle = '#65a30d';
+    ctx.fillRect(0, GROUND_Y, W, GROUND_H);
+    ctx.fillStyle = '#4d7c0f';
+    ctx.fillRect(0, GROUND_Y, W, 6);
+    ctx.fillStyle = '#84cc16';
+    for (let x = -24 + (-groundOffset); x < W; x += 24) {
+      ctx.fillRect(x, GROUND_Y + 18, 12, 4);
+    }
+
+    drawKite();
+
+    if (!started && running) {
+      ctx.fillStyle = 'rgba(15,23,42,0.75)';
+      ctx.font = 'bold 15px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Tap to lift!', W/2, H/2 + 60);
+    }
+
+    if (started) {
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = 'rgba(15,23,42,0.6)';
+      ctx.lineWidth = 4;
+      ctx.font = 'bold 34px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.strokeText(score, W/2, 56);
+      ctx.fillText(score, W/2, 56);
+    }
+  }
+
+  let raf = 0;
+  function loop(now) {
+    if (!running) return;
+    const dt = Math.min(2.5, (now - lastTime) / 16.667);
+    lastTime = now;
+    update(dt);
+    if (running) {
+      draw();
+      raf = requestAnimationFrame(loop);
+    }
+  }
+
+  function gameOver() {
+    running = false;
+    if (score > best) {
+      best = score;
+      bestEl.textContent = best;
+      safeSet('kite_best', best);
+    }
+    draw();
+    overlayTitle.textContent = 'KITE DOWN!';
+    overlayMsg.textContent = `You passed ${score} pole${score === 1 ? '' : 's'}. Best: ${best}`;
+    startBtn.textContent = 'Fly Again';
+    // short delay so a frantic last tap doesn't instantly dismiss the screen
+    setTimeout(() => overlay.classList.remove('hidden'), 350);
+  }
+
+  function startGame() {
+    reset();
+    overlay.classList.add('hidden');
+    cancelAnimationFrame(raf);
+    lastTime = performance.now();
+    raf = requestAnimationFrame(loop);
+  }
+
+  startBtn.addEventListener('click', startGame);
+
+  canvas.addEventListener('pointerdown', e => { e.preventDefault(); flap(); });
+  window.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w') {
+      e.preventDefault();
+      if (overlay.classList.contains('hidden')) flap();
+    }
+  });
+
+  // ---- Fullscreen ----
+  const wrap = document.getElementById('board-wrap');
+  const fsBtn = document.getElementById('fs-btn');
+
+  function nativeFsActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+  function isFs() {
+    return nativeFsActive() || wrap.classList.contains('pseudo-fs');
+  }
+  // In fullscreen the game fills the ENTIRE screen: the play area keeps its
+  // height but gets wider/narrower to match the screen's shape (no black bars,
+  // no stretching). The canvas is also rendered at up to 2x for a sharper image.
+  const BASE_W = 320;
+  function fitCanvas() {
+    let newW, scale;
+    if (isFs()) {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      newW = Math.max(220, Math.min(1000, (H * vw) / vh));
+      scale = Math.min(2, Math.max(1, vh / H));
+      canvas.style.width = vw + 'px';
+      canvas.style.height = vh + 'px';
+    } else {
+      newW = BASE_W;
+      scale = 1;
+      canvas.style.width = '';
+      canvas.style.height = '';
+    }
+    const pxW = Math.round(newW * scale), pxH = Math.round(H * scale);
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW;
+      canvas.height = pxH;
+    }
+    ctx.setTransform(pxW / newW, 0, 0, pxH / H, 0, 0);
+    W = newW;
+    if (poles && poles.length) fillPoles();
+    draw();
+  }
+  function syncFsState() {
+    wrap.classList.toggle('is-fs', isFs());
+    fsBtn.textContent = isFs() ? '✕' : '⛶';
+    fitCanvas();
+  }
+  function pseudoFsOn() {
+    // Fallback (e.g. iPhone Safari, or embeds that block the Fullscreen API):
+    // stretch the game over the whole browser window instead
+    wrap.classList.add('pseudo-fs');
+    syncFsState();
+  }
+  function enterFs() {
+    const req = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+    if (req) {
+      try {
+        const p = req.call(wrap);
+        if (p && p.catch) p.catch(pseudoFsOn);
+      } catch (e) { pseudoFsOn(); }
+    } else {
+      pseudoFsOn();
+    }
+  }
+  function exitFs() {
+    if (nativeFsActive()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    }
+    wrap.classList.remove('pseudo-fs');
+    syncFsState();
+  }
+  function toggleFs() { isFs() ? exitFs() : enterFs(); }
+
+  fsBtn.addEventListener('click', toggleFs);
+  document.addEventListener('fullscreenchange', syncFsState);
+  document.addEventListener('webkitfullscreenchange', syncFsState);
+  window.addEventListener('resize', fitCanvas);
+  window.addEventListener('orientationchange', () => setTimeout(fitCanvas, 150));
+  window.addEventListener('keydown', e => {
+    if (e.key === 'f' || e.key === 'F') { toggleFs(); }
+    else if (e.key === 'Escape' && wrap.classList.contains('pseudo-fs')) { exitFs(); }
+  });
+
+  reset();
+  draw();
+})();
+</script>
+</body>
+</html>
